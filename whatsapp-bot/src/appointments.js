@@ -1,9 +1,11 @@
-const fs   = require("fs");
-const path = require("path");
-const dayjs = require("dayjs");
-const { v4: uuidv4 } = require("uuid");
-const config = require("./config");
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import dayjs from "dayjs";
+import { v4 as uuidv4 } from "uuid";
+import config from "./config.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataPath = path.resolve(__dirname, "..", config.dataFile);
 
 // ── Persistence helpers ────────────────────────────────────────────────────
@@ -24,10 +26,6 @@ function saveAppointments(appointments) {
 
 // ── Slot generation ────────────────────────────────────────────────────────
 
-/**
- * Build all possible time slots for a given date string ("YYYY-MM-DD").
- * Returns an array of { start: dayjs, end: dayjs } objects.
- */
 function slotsForDate(dateStr) {
   const { startHour, endHour, slotDurationMinutes } = config.schedule;
   const slots = [];
@@ -43,10 +41,7 @@ function slotsForDate(dateStr) {
   return slots;
 }
 
-/**
- * Returns available (unbooked) slot strings for a date, e.g. ["09:00", "10:00", …].
- */
-function availableSlotsForDate(dateStr) {
+export function availableSlotsForDate(dateStr) {
   const appointments = loadAppointments();
   const bookedTimes = appointments
     .filter((a) => a.date === dateStr && a.status !== "cancelled")
@@ -57,10 +52,7 @@ function availableSlotsForDate(dateStr) {
     .filter((t) => !bookedTimes.includes(t));
 }
 
-/**
- * Returns the next N working days starting from tomorrow.
- */
-function nextAvailableDays(count = 5) {
+export function nextAvailableDays(count = 5) {
   const { workingDays, bookingWindowDays } = config.schedule;
   const days = [];
   let cursor = dayjs().add(1, "day");
@@ -79,10 +71,7 @@ function nextAvailableDays(count = 5) {
 
 // ── CRUD ───────────────────────────────────────────────────────────────────
 
-/**
- * Create a new appointment. Returns the saved appointment object.
- */
-function createAppointment({ phone, name, date, time, serviceId }) {
+export function createAppointment({ phone, name, date, time, serviceId }) {
   const appointments = loadAppointments();
   const service = config.services.find((s) => s.id === serviceId);
 
@@ -103,26 +92,17 @@ function createAppointment({ phone, name, date, time, serviceId }) {
   return appointment;
 }
 
-/**
- * Find appointments by phone number.
- */
-function appointmentsByPhone(phone) {
+export function appointmentsByPhone(phone) {
   return loadAppointments().filter(
     (a) => a.phone === phone && a.status !== "cancelled"
   );
 }
 
-/**
- * Find a single appointment by ID.
- */
-function appointmentById(id) {
+export function appointmentById(id) {
   return loadAppointments().find((a) => a.id === id.toUpperCase());
 }
 
-/**
- * Cancel an appointment by ID. Returns the updated record or null.
- */
-function cancelAppointment(id) {
+export function cancelAppointment(id) {
   const appointments = loadAppointments();
   const idx = appointments.findIndex((a) => a.id === id.toUpperCase());
   if (idx === -1) return null;
@@ -131,12 +111,3 @@ function cancelAppointment(id) {
   saveAppointments(appointments);
   return appointments[idx];
 }
-
-module.exports = {
-  availableSlotsForDate,
-  nextAvailableDays,
-  createAppointment,
-  appointmentsByPhone,
-  appointmentById,
-  cancelAppointment,
-};

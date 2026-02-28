@@ -1,4 +1,4 @@
-const config = require("./config");
+import config from "./config.js";
 
 /**
  * In-memory session store.
@@ -17,35 +17,32 @@ const config = require("./config");
 
 const sessions = new Map();
 
-function getSession(phone) {
+export function getSession(phone) {
   const existing = sessions.get(phone);
   if (existing) {
-    // Auto-expire sessions
     const ageMs = Date.now() - existing.updatedAt;
     if (ageMs > config.sessionTimeoutMinutes * 60 * 1000) {
       sessions.delete(phone);
-      return createSession(phone);
+      return _create(phone);
     }
     return existing;
   }
-  return createSession(phone);
+  return _create(phone);
 }
 
-function createSession(phone) {
+function _create(phone) {
   const session = { phone, state: "idle", data: {}, updatedAt: Date.now() };
   sessions.set(phone, session);
   return session;
 }
 
-function updateSession(phone, patch) {
+export function updateSession(phone, patch) {
   const session = getSession(phone);
   Object.assign(session, patch, { updatedAt: Date.now() });
   sessions.set(phone, session);
   return session;
 }
 
-function resetSession(phone) {
-  return createSession(phone);
+export function resetSession(phone) {
+  return _create(phone);
 }
-
-module.exports = { getSession, updateSession, resetSession };

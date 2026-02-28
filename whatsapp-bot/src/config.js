@@ -29,11 +29,11 @@ const config = {
     { id: "extended",     label: "Extended Session (90 min)", durationMinutes: 90 },
   ],
 
-  // Path to the JSON file that persists appointments
+  // Path to the JSON file that persists appointments (relative to whatsapp-bot/)
   dataFile: "./data/appointments.json",
 
   // Session timeout in minutes (resets conversation state)
   sessionTimeoutMinutes: 30,
 };
 
-module.exports = config;
+export default config;

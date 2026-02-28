@@ -1,129 +1,144 @@
-const { Client, LocalAuth } = require("whatsapp-web.js");
-const qrcode = require("qrcode-terminal");
-const dayjs  = require("dayjs");
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  isJidGroup,
+} from "@whiskeysockets/baileys";
+import qrcode from "qrcode-terminal";
+import dayjs from "dayjs";
+import path from "path";
+import { fileURLToPath } from "url";
+import Pino from "pino";
 
-const config      = require("./config");
-const { findFaqAnswer } = require("./faqs");
-const sessions    = require("./sessions");
-const appts       = require("./appointments");
+import config from "./config.js";
+import { findFaqAnswer } from "./faqs.js";
+import * as sessions from "./sessions.js";
+import * as appts from "./appointments.js";
 
-// ── WhatsApp client ────────────────────────────────────────────────────────
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const AUTH_DIR = path.resolve(__dirname, "..", ".wwebjs_auth");
 
-const client = new Client({
-  authStrategy: new LocalAuth(),
-  puppeteer: {
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  },
-});
+// ── Connect ────────────────────────────────────────────────────────────────
 
-client.on("qr", (qr) => {
-  console.log("\nScan the QR code below with WhatsApp to log in:\n");
-  qrcode.generate(qr, { small: true });
-});
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
-client.on("ready", () => {
-  console.log(`\n✅  ${config.business.name} WhatsApp Bot is ready!\n`);
-});
+  const sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: false,          // we print it ourselves below
+    logger: Pino({ level: "silent" }), // suppress verbose logs
+  });
 
-client.on("auth_failure", () => {
-  console.error("❌  Authentication failed. Delete the .wwebjs_auth folder and try again.");
-  process.exit(1);
-});
+  // Save credentials whenever they change
+  sock.ev.on("creds.update", saveCreds);
 
-// ── Message handler ────────────────────────────────────────────────────────
+  // Connection lifecycle
+  sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log("\nScan the QR code below with WhatsApp to log in:\n");
+      qrcode.generate(qr, { small: true });
+    }
 
-client.on("message", async (msg) => {
-  // Ignore group messages and status updates
-  if (msg.isGroupMsg || msg.type !== "chat") return;
+    if (connection === "open") {
+      console.log(`\n✅  ${config.business.name} WhatsApp Bot is ready!\n`);
+    }
 
-  const phone   = msg.from;          // e.g. "15550001234@c.us"
-  const text    = msg.body.trim();
-  const session = sessions.getSession(phone);
+    if (connection === "close") {
+      const code = lastDisconnect?.error?.output?.statusCode;
+      const loggedOut = code === DisconnectReason.loggedOut;
 
-  try {
-    const reply = await handleMessage(phone, text, session);
-    if (reply) await msg.reply(reply);
-  } catch (err) {
-    console.error("Error handling message:", err);
-    await msg.reply("⚠️  Something went wrong. Please try again or contact us directly.");
-  }
-});
+      if (loggedOut) {
+        console.error("❌  Logged out. Delete .wwebjs_auth/ and restart.");
+        process.exit(1);
+      } else {
+        console.log("🔄  Connection closed, reconnecting…");
+        startBot();
+      }
+    }
+  });
+
+  // Incoming messages
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      // Ignore own messages, group messages, and non-text
+      if (msg.key.fromMe) continue;
+      if (isJidGroup(msg.key.remoteJid)) continue;
+
+      const text = (
+        msg.message?.conversation ||
+        msg.message?.extendedTextMessage?.text ||
+        ""
+      ).trim();
+
+      if (!text) continue;
+
+      const phone   = msg.key.remoteJid;
+      const session = sessions.getSession(phone);
+
+      try {
+        const reply = await handleMessage(phone, text, session);
+        if (reply) {
+          await sock.sendMessage(phone, { text: reply });
+        }
+      } catch (err) {
+        console.error("Error handling message:", err);
+        await sock.sendMessage(phone, {
+          text: "⚠️  Something went wrong. Please try again or contact us directly.",
+        });
+      }
+    }
+  });
+}
 
 // ── Core conversation handler ──────────────────────────────────────────────
 
 async function handleMessage(phone, text, session) {
   const upper = text.toUpperCase();
 
-  // ── Global commands (work from any state) ──────────────────────────────
-  if (upper === "HELP" || upper === "HI" || upper === "HELLO" || upper === "START" || upper === "MENU") {
+  // ── Global commands ────────────────────────────────────────────────────
+  if (["HELP", "HI", "HELLO", "START", "MENU"].includes(upper)) {
     sessions.resetSession(phone);
     return menuMessage();
   }
 
   if (upper === "BOOK") {
     sessions.updateSession(phone, { state: "book_name", data: {} });
-    return (
-      `📅 *Book an Appointment*\n\n` +
-      `Let's get you scheduled! First, what is your full name?`
-    );
+    return `📅 *Book an Appointment*\n\nLet's get you scheduled! First, what is your full name?`;
   }
 
   if (upper.startsWith("CANCEL")) {
     const parts = upper.split(/\s+/);
-    if (parts.length === 2) {
-      return handleCancelById(phone, parts[1]);
-    }
+    if (parts.length === 2) return handleCancelById(phone, parts[1]);
     sessions.updateSession(phone, { state: "cancel_id", data: {} });
     return `🗑️ *Cancel Appointment*\n\nPlease enter your booking ID (e.g. *AB12CD34*):`;
   }
 
   if (upper.startsWith("RESCHEDULE")) {
     const parts = upper.split(/\s+/);
-    if (parts.length === 2) {
-      return handleRescheduleStart(phone, parts[1]);
-    }
+    if (parts.length === 2) return handleRescheduleStart(phone, parts[1]);
     sessions.updateSession(phone, { state: "reschedule_id", data: {} });
     return `🔄 *Reschedule Appointment*\n\nPlease enter your booking ID to reschedule:`;
   }
 
-  if (upper === "MY APPOINTMENTS" || upper === "APPOINTMENTS" || upper === "MY BOOKINGS") {
+  if (["MY APPOINTMENTS", "APPOINTMENTS", "MY BOOKINGS"].includes(upper)) {
     return listMyAppointments(phone);
   }
 
   // ── State machine ──────────────────────────────────────────────────────
   switch (session.state) {
-    case "book_name":
-      return handleBookName(phone, text);
+    case "book_name":     return handleBookName(phone, text);
+    case "book_service":  return handleBookService(phone, text);
+    case "book_date":     return handleBookDate(phone, text);
+    case "book_time":     return handleBookTime(phone, text);
+    case "book_confirm":  return handleBookConfirm(phone, upper);
+    case "cancel_id":     return handleCancelById(phone, text);
+    case "reschedule_id": return handleRescheduleStart(phone, text);
 
-    case "book_service":
-      return handleBookService(phone, text);
-
-    case "book_date":
-      return handleBookDate(phone, text);
-
-    case "book_time":
-      return handleBookTime(phone, text);
-
-    case "book_confirm":
-      return handleBookConfirm(phone, upper);
-
-    case "cancel_id":
-      return handleCancelById(phone, text);
-
-    case "reschedule_id":
-      return handleRescheduleStart(phone, text);
-
-    // idle / unknown state
     default: {
-      // Try FAQ matching first
       const faqAnswer = findFaqAnswer(text);
       if (faqAnswer) return faqAnswer;
-
-      // Fall back to the main menu hint
-      return (
-        `I'm not sure I understand. Here's what I can help with:\n\n` +
-        menuMessage()
-      );
+      return `I'm not sure I understand. Here's what I can help with:\n\n${menuMessage()}`;
     }
   }
 }
@@ -246,7 +261,7 @@ function handleBookConfirm(phone, upper) {
   const { name, serviceId, date, time } = session.data;
 
   const appointment = appts.createAppointment({
-    phone: phone.replace("@c.us", ""),
+    phone: phone.replace("@s.whatsapp.net", ""),
     name,
     date,
     time,
@@ -307,7 +322,6 @@ function handleRescheduleStart(phone, id) {
     return `Appointment *${id.toUpperCase()}* is already cancelled and cannot be rescheduled.`;
   }
 
-  // Cancel old booking, then start a fresh book flow with the same name + service
   appts.cancelAppointment(id);
 
   const days = appts.nextAvailableDays(7);
@@ -339,7 +353,7 @@ function handleRescheduleStart(phone, id) {
 // ── My appointments ────────────────────────────────────────────────────────
 
 function listMyAppointments(phone) {
-  const list = appts.appointmentsByPhone(phone.replace("@c.us", ""));
+  const list = appts.appointmentsByPhone(phone.replace("@s.whatsapp.net", ""));
 
   if (list.length === 0) {
     return `You have no upcoming appointments.\n\nReply *BOOK* to schedule one.`;
@@ -393,4 +407,7 @@ function formatTime(timeStr) {
 
 // ── Start ──────────────────────────────────────────────────────────────────
 
-client.initialize();
+startBot().catch((err) => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});

@@ -1,4 +1,4 @@
-const config = require("./config");
+import config from "./config.js";
 
 /**
  * FAQ entries.
@@ -11,7 +11,7 @@ const faqs = [
     keywords: ["hour", "hours", "open", "opening", "schedule", "time", "times", "when"],
     answer:
       `*Business Hours* 🕐\n` +
-      `Monday – Friday: ${config.business.phone ? "" : ""}9:00 AM – 5:00 PM\n` +
+      `Monday – Friday: 9:00 AM – 5:00 PM\n` +
       `Saturday & Sunday: Closed\n\n` +
       `Reply *BOOK* at any time to schedule an appointment.`,
   },
@@ -69,7 +69,7 @@ const faqs = [
  * Try to match the user's message against the FAQ list.
  * Returns the answer string, or null if no match.
  */
-function findFaqAnswer(message) {
+export function findFaqAnswer(message) {
   const lower = message.toLowerCase();
   for (const faq of faqs) {
     if (faq.keywords.some((kw) => lower.includes(kw))) {
@@ -78,5 +78,3 @@ function findFaqAnswer(message) {
   }
   return null;
 }
-
-module.exports = { findFaqAnswer };
